@@ -10,7 +10,8 @@ env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   ARTIFACT_REPO: ecommerce-pipeline
   IMAGE_NAME: ecommerce-processor
-  TF_STATE_BUCKET: ${{ secrets.GCP_PROJECT_ID }}-tfstate-ecommerce
+  # Optional override (recommended): set secret TF_STATE_BUCKET to the exact bucket name.
+  TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET != '' && secrets.TF_STATE_BUCKET || format('{0}-tfstate-ecommerce', secrets.GCP_PROJECT_ID) }}
   TF_STATE_PREFIX: ecommerce-processor
 
 jobs:
@@ -33,9 +34,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ! gcloud storage buckets describe "gs://yash-playground-dev-tfstate-ecommerce" >/dev/null 2>&1; then
-            echo "Terraform state bucket does not exist: gs://${TF_STATE_BUCKET}" >&2
-            echo "Create it manually (you can reuse an existing bucket) and re-run." >&2
+          BUCKET_URI="gs://${TF_STATE_BUCKET}"
+          echo "Using Terraform state bucket: ${BUCKET_URI}"
+
+          set +e
+          DESCRIBE_OUT=$(gcloud storage buckets describe "${BUCKET_URI}" 2>&1)
+          STATUS=$?
+          set -e
+
+          if [ "${STATUS}" -ne 0 ]; then
+            echo "Failed to access Terraform state bucket: ${BUCKET_URI}" >&2
+            echo "gcloud output:" >&2
+            echo "${DESCRIBE_OUT}" >&2
+            echo "" >&2
+            echo "Common causes:" >&2
+            echo "- Bucket name mismatch (set secret TF_STATE_BUCKET to the exact name)." >&2
+            echo "- Missing permissions: the workflow SA needs storage.buckets.get on the bucket." >&2
             exit 1
           fi
 
