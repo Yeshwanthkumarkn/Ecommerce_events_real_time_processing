@@ -5,10 +5,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /workspace
 
-COPY requirements.txt /workspace/app/requirements.txt
+COPY app/requirements.txt /workspace/app/requirements.txt
 RUN pip install --no-cache-dir -r /workspace/app/requirements.txt
 
-COPY . /workspace/app/
+COPY app/ /workspace/app/
 
 ENV PORT=8080
 EXPOSE 8080
