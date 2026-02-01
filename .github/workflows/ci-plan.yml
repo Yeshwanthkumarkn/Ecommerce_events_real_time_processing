@@ -33,7 +33,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ! gcloud storage buckets describe "gs://${TF_STATE_BUCKET}" >/dev/null 2>&1; then
+          if ! gcloud storage buckets describe "gs://yash-playground-dev-tfstate-ecommerce" >/dev/null 2>&1; then
             echo "Terraform state bucket does not exist: gs://${TF_STATE_BUCKET}" >&2
             echo "Create it manually (you can reuse an existing bucket) and re-run." >&2
             exit 1
