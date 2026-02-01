@@ -1,0 +1,2 @@
+faker==24.8.0
+google-cloud-pubsub==2.23.0
