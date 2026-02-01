@@ -1,0 +1,68 @@
+name: manual-apply
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy (typically a commit SHA from ci-plan)"
+        required: true
+        default: "${{ github.sha }}"
+
+env:
+  REGION: ${{ secrets.REGION }}
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  ARTIFACT_REPO: ecommerce-pipeline
+  IMAGE_NAME: ecommerce-processor
+  TF_STATE_BUCKET: ${{ secrets.GCP_PROJECT_ID }}-tfstate-ecommerce
+  TF_STATE_PREFIX: ecommerce-processor
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Auth to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Ensure Terraform state bucket exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gcloud storage buckets describe "gs://${TF_STATE_BUCKET}" >/dev/null 2>&1; then
+            gcloud storage buckets create "gs://${TF_STATE_BUCKET}" \
+              --location "${REGION}" \
+              --uniform-bucket-level-access
+            gcloud storage buckets update "gs://${TF_STATE_BUCKET}" --versioning
+          fi
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform init (GCS backend)
+        working-directory: terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="prefix=${TF_STATE_PREFIX}"
+
+      - name: Terraform plan (review in logs)
+        working-directory: terraform
+        run: |
+          IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/$ARTIFACT_REPO/$IMAGE_NAME:${{ inputs.image_tag }}"
+          echo "Deploying image: $IMAGE"
+          terraform plan -out=tfplan \
+            -var="project_id=$PROJECT_ID" \
+            -var="region=$REGION" \
+            -var="image=$IMAGE"
+
+      - name: Terraform apply
+        working-directory: terraform
+        run: terraform apply -auto-approve tfplan

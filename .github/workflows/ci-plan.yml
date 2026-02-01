@@ -1,18 +1,20 @@
-name: gcp-ci-cd
+name: ci-plan
 
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:
+  pull_request:
 
 env:
   REGION: ${{ secrets.REGION }}
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   ARTIFACT_REPO: ecommerce-pipeline
   IMAGE_NAME: ecommerce-processor
+  TF_STATE_BUCKET: ${{ secrets.GCP_PROJECT_ID }}-tfstate-ecommerce
+  TF_STATE_PREFIX: ecommerce-processor
 
 jobs:
-  build_plan_deploy:
+  build_and_plan:
     runs-on: ubuntu-latest
 
     steps:
@@ -26,6 +28,17 @@ jobs:
 
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
+
+      - name: Ensure Terraform state bucket exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gcloud storage buckets describe "gs://${TF_STATE_BUCKET}" >/dev/null 2>&1; then
+            gcloud storage buckets create "gs://${TF_STATE_BUCKET}" \
+              --location "${REGION}" \
+              --uniform-bucket-level-access
+            gcloud storage buckets update "gs://${TF_STATE_BUCKET}" --versioning
+          fi
 
       - name: Ensure Artifact Registry repo exists
         shell: bash
@@ -44,14 +57,21 @@ jobs:
           set -euo pipefail
           gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
 
-      - name: Build & push image
+      - name: Build & push image (commit tag)
         shell: bash
         run: |
           set -euo pipefail
           IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/$ARTIFACT_REPO/$IMAGE_NAME:${GITHUB_SHA}"
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "$IMAGE" > image.txt
           docker build -f app/Dockerfile -t "$IMAGE" .
           docker push "$IMAGE"
+
+      - name: Upload image reference
+        uses: actions/upload-artifact@v4
+        with:
+          name: image
+          path: image.txt
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -60,27 +80,28 @@ jobs:
         working-directory: terraform
         run: terraform fmt -check
 
-      - name: Terraform init
+      - name: Terraform init (GCS backend)
         working-directory: terraform
-        run: terraform init
+        run: |
+          terraform init \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="prefix=${TF_STATE_PREFIX}"
 
       - name: Terraform validate
         working-directory: terraform
         run: terraform validate
 
-      - name: Terraform plan
+      - name: Terraform plan (no apply on push)
         working-directory: terraform
         run: |
-          terraform plan \
+          terraform plan -out=tfplan \
             -var="project_id=$PROJECT_ID" \
             -var="region=$REGION" \
             -var="image=$IMAGE"
+          terraform show -no-color tfplan > tfplan.txt
 
-      - name: Terraform apply (manual only)
-        if: ${{ github.event_name == 'workflow_dispatch' }}
-        working-directory: terraform
-        run: |
-          terraform apply -auto-approve \
-            -var="project_id=$PROJECT_ID" \
-            -var="region=$REGION" \
-            -var="image=$IMAGE"
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: terraform/tfplan.txt

@@ -14,13 +14,28 @@ Infrastructure is defined in [terraform/README.md](terraform/README.md).
 
 ## CI/CD (GitHub Actions)
 
-Workflow: [.github/workflows/gcp-ci-cd.yml](.github/workflows/gcp-ci-cd.yml)
+Workflows:
+
+- CI (build image + terraform plan): [.github/workflows/ci-plan.yml](.github/workflows/ci-plan.yml)
+- Manual apply (no rebuild, deploy an existing image tag): [.github/workflows/manual-apply.yml](.github/workflows/manual-apply.yml)
 
 Required GitHub Secrets:
 
 - `GCP_PROJECT_ID`
 - `REGION` (example: `us-central1`)
 - `GCP_SA_KEY` (service account JSON key with permissions for Artifact Registry + Cloud Run + Pub/Sub + BigQuery + IAM)
+
+### Why apply can fail with “already exists”
+
+Terraform needs a shared remote state. GitHub Actions runners are ephemeral; without a backend, Terraform will not remember previously-created resources and will try to create them again.
+
+This repo uses a GCS backend (see [terraform/backend.tf](terraform/backend.tf)). The workflows automatically create a state bucket named `${GCP_PROJECT_ID}-tfstate-ecommerce`.
+
+If you already created resources before the backend was configured, import them once into state:
+
+```powershell
+./scripts/terraform-import.ps1 -ProjectId yash-playground-dev -Region us-central1
+```
 
 ## Local run (smoke test)
 
