@@ -6,7 +6,6 @@ on:
       image_tag:
         description: "Image tag to deploy (typically a commit SHA from ci-plan)"
         required: true
-        default: "${{ github.sha }}"
 
 env:
   REGION: ${{ secrets.REGION }}
