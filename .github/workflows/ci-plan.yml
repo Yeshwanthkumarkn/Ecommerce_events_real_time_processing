@@ -29,15 +29,14 @@ jobs:
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Ensure Terraform state bucket exists
+      - name: Verify Terraform state bucket exists
         shell: bash
         run: |
           set -euo pipefail
           if ! gcloud storage buckets describe "gs://${TF_STATE_BUCKET}" >/dev/null 2>&1; then
-            gcloud storage buckets create "gs://${TF_STATE_BUCKET}" \
-              --location "${REGION}" \
-              --uniform-bucket-level-access
-            gcloud storage buckets update "gs://${TF_STATE_BUCKET}" --versioning
+            echo "Terraform state bucket does not exist: gs://${TF_STATE_BUCKET}" >&2
+            echo "Create it manually (you can reuse an existing bucket) and re-run." >&2
+            exit 1
           fi
 
       - name: Ensure Artifact Registry repo exists
