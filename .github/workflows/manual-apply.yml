@@ -1,0 +1,80 @@
+name: manual-apply
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy (typically a commit SHA from ci-plan)"
+        required: true
+
+env:
+  REGION: ${{ secrets.REGION }}
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  ARTIFACT_REPO: ecommerce-pipeline
+  IMAGE_NAME: ecommerce-processor
+  # Optional override (recommended): set secret TF_STATE_BUCKET to the exact bucket name.
+  TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET != '' && secrets.TF_STATE_BUCKET || format('{0}-tfstate-ecommerce', secrets.GCP_PROJECT_ID) }}
+  TF_STATE_PREFIX: ecommerce-processor
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Auth to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Verify Terraform state bucket exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUCKET_URI="gs://${TF_STATE_BUCKET}"
+          echo "Using Terraform state bucket: ${BUCKET_URI}"
+
+          set +e
+          DESCRIBE_OUT=$(gcloud storage buckets describe "${BUCKET_URI}" 2>&1)
+          STATUS=$?
+          set -e
+
+          if [ "${STATUS}" -ne 0 ]; then
+            echo "Failed to access Terraform state bucket: ${BUCKET_URI}" >&2
+            echo "gcloud output:" >&2
+            echo "${DESCRIBE_OUT}" >&2
+            echo "" >&2
+            echo "Common causes:" >&2
+            echo "- Bucket name mismatch (set secret TF_STATE_BUCKET to the exact name)." >&2
+            echo "- Missing permissions: the workflow SA needs storage.buckets.get on the bucket." >&2
+            exit 1
+          fi
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform init (GCS backend)
+        working-directory: terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="prefix=${TF_STATE_PREFIX}"
+
+      - name: Terraform plan (review in logs)
+        working-directory: terraform
+        run: |
+          IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/$ARTIFACT_REPO/$IMAGE_NAME:${{ inputs.image_tag }}"
+          echo "Deploying image: $IMAGE"
+          terraform plan -out=tfplan \
+            -var="project_id=$PROJECT_ID" \
+            -var="region=$REGION" \
+            -var="image=$IMAGE"
+
+      - name: Terraform apply
+        working-directory: terraform
+        run: terraform apply -auto-approve tfplan

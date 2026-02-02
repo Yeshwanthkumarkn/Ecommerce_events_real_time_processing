@@ -1,18 +1,21 @@
-name: gcp-ci-cd
+name: ci-plan
 
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:
+  pull_request:
 
 env:
   REGION: ${{ secrets.REGION }}
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   ARTIFACT_REPO: ecommerce-pipeline
   IMAGE_NAME: ecommerce-processor
+  # Optional override (recommended): set secret TF_STATE_BUCKET to the exact bucket name.
+  TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET != '' && secrets.TF_STATE_BUCKET || format('{0}-tfstate-ecommerce', secrets.GCP_PROJECT_ID) }}
+  TF_STATE_PREFIX: ecommerce-processor
 
 jobs:
-  build_plan_deploy:
+  build_and_plan:
     runs-on: ubuntu-latest
 
     steps:
@@ -26,6 +29,29 @@ jobs:
 
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
+
+      - name: Verify Terraform state bucket exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUCKET_URI="gs://${TF_STATE_BUCKET}"
+          echo "Using Terraform state bucket: ${BUCKET_URI}"
+
+          set +e
+          DESCRIBE_OUT=$(gcloud storage buckets describe "${BUCKET_URI}" 2>&1)
+          STATUS=$?
+          set -e
+
+          if [ "${STATUS}" -ne 0 ]; then
+            echo "Failed to access Terraform state bucket: ${BUCKET_URI}" >&2
+            echo "gcloud output:" >&2
+            echo "${DESCRIBE_OUT}" >&2
+            echo "" >&2
+            echo "Common causes:" >&2
+            echo "- Bucket name mismatch (set secret TF_STATE_BUCKET to the exact name)." >&2
+            echo "- Missing permissions: the workflow SA needs storage.buckets.get on the bucket." >&2
+            exit 1
+          fi
 
       - name: Ensure Artifact Registry repo exists
         shell: bash
@@ -44,14 +70,21 @@ jobs:
           set -euo pipefail
           gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
 
-      - name: Build & push image
+      - name: Build & push image (commit tag)
         shell: bash
         run: |
           set -euo pipefail
           IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/$ARTIFACT_REPO/$IMAGE_NAME:${GITHUB_SHA}"
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "$IMAGE" > image.txt
           docker build -f app/Dockerfile -t "$IMAGE" .
           docker push "$IMAGE"
+
+      - name: Upload image reference
+        uses: actions/upload-artifact@v4
+        with:
+          name: image
+          path: image.txt
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -60,27 +93,28 @@ jobs:
         working-directory: terraform
         run: terraform fmt -check
 
-      - name: Terraform init
+      - name: Terraform init (GCS backend)
         working-directory: terraform
-        run: terraform init
+        run: |
+          terraform init \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="prefix=${TF_STATE_PREFIX}"
 
       - name: Terraform validate
         working-directory: terraform
         run: terraform validate
 
-      - name: Terraform plan
+      - name: Terraform plan (no apply on push)
         working-directory: terraform
         run: |
-          terraform plan \
+          terraform plan -out=tfplan \
             -var="project_id=$PROJECT_ID" \
             -var="region=$REGION" \
             -var="image=$IMAGE"
+          terraform show -no-color tfplan > tfplan.txt
 
-      - name: Terraform apply (manual only)
-        if: ${{ github.event_name == 'workflow_dispatch' }}
-        working-directory: terraform
-        run: |
-          terraform apply -auto-approve \
-            -var="project_id=$PROJECT_ID" \
-            -var="region=$REGION" \
-            -var="image=$IMAGE"
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: terraform/tfplan.txt

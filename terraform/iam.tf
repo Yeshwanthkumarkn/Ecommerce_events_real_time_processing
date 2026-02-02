@@ -26,6 +26,25 @@ resource "google_project_iam_member" "cloud_run_logs" {
   member  = "serviceAccount:${google_service_account.cloud_run_sa.email}"
 }
 
+# Allow Cloud Run to pull images from Artifact Registry.
+# The image pull is performed by the Cloud Run Service Agent.
+resource "google_artifact_registry_repository_iam_member" "cloud_run_service_agent_reader" {
+  project    = var.project_id
+  location   = var.region
+  repository = google_artifact_registry_repository.repo.repository_id
+  role       = "roles/artifactregistry.reader"
+  member     = "serviceAccount:service-${data.google_project.current.number}@serverless-robot-prod.iam.gserviceaccount.com"
+}
+
+# Also grant the runtime service account read access (useful for some setups/tools).
+resource "google_artifact_registry_repository_iam_member" "cloud_run_runtime_sa_reader" {
+  project    = var.project_id
+  location   = var.region
+  repository = google_artifact_registry_repository.repo.repository_id
+  role       = "roles/artifactregistry.reader"
+  member     = "serviceAccount:${google_service_account.cloud_run_sa.email}"
+}
+
 # Allow Pub/Sub service agent to mint OIDC tokens for pubsub_push_sa.
 resource "google_service_account_iam_member" "pubsub_token_creator" {
   service_account_id = google_service_account.pubsub_push_sa.name
