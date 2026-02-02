@@ -65,6 +65,82 @@ jobs:
             -backend-config="bucket=${TF_STATE_BUCKET}" \
             -backend-config="prefix=${TF_STATE_PREFIX}"
 
+      - name: Bootstrap Terraform state (import existing resources)
+        shell: bash
+        working-directory: terraform
+        run: |
+          set -euo pipefail
+
+          # If the backend state is empty (common when switching from local state or after creating
+          # resources manually), Terraform will try to create resources and fail with 409 Already Exists.
+          # This step imports known resources once so future runs behave normally.
+
+          PROJECT_ID="${PROJECT_ID}"
+          REGION="${REGION}"
+          ARTIFACT_REPO="${ARTIFACT_REPO}"
+          SERVICE_NAME="ecommerce-processor"
+          DATASET_ID="ecommerce_streaming"
+          RAW_TABLE_ID="ecommerce_raw_events"
+          PROCESSED_TABLE_ID="ecommerce_processed_events"
+          ERROR_TABLE_ID="ecommerce_error_events"
+          TOPIC_NAME="ecommerce_events"
+          SUBSCRIPTION_NAME="ecommerce_events_push_sub"
+
+          state_count=$(terraform state list 2>/dev/null | wc -l | tr -d ' ')
+          if [ "${state_count}" != "0" ]; then
+            echo "Terraform state already has ${state_count} resources; skipping import bootstrap."
+            exit 0
+          fi
+
+          echo "Terraform state is empty; importing existing resources (best-effort)."
+
+          try_import() {
+            local addr="$1"
+            local id="$2"
+
+            set +e
+            out=$(terraform import -no-color "${addr}" "${id}" 2>&1)
+            code=$?
+            set -e
+
+            if [ "${code}" -eq 0 ]; then
+              echo "Imported: ${addr}"
+              return 0
+            fi
+
+            # Already in state is OK (happens if state isn't truly empty, or reruns).
+            if echo "${out}" | grep -qi "already managed"; then
+              echo "Already managed: ${addr}"
+              return 0
+            fi
+
+            # If the remote object doesn't exist, skip (some resources may not have been created yet).
+            if echo "${out}" | grep -qi "Cannot import non-existent remote object"; then
+              echo "Not found (skipping): ${addr}"
+              return 0
+            fi
+
+            echo "Import failed for ${addr} (${id})" >&2
+            echo "${out}" >&2
+            exit 1
+          }
+
+          cloud_run_sa_email="ecommerce-processor-sa@${PROJECT_ID}.iam.gserviceaccount.com"
+          pubsub_push_sa_email="ecommerce-pubsub-push-sa@${PROJECT_ID}.iam.gserviceaccount.com"
+
+          try_import "google_artifact_registry_repository.repo" "projects/${PROJECT_ID}/locations/${REGION}/repositories/${ARTIFACT_REPO}"
+          try_import "google_bigquery_dataset.ds" "projects/${PROJECT_ID}/datasets/${DATASET_ID}"
+          try_import "google_bigquery_table.raw" "projects/${PROJECT_ID}/datasets/${DATASET_ID}/tables/${RAW_TABLE_ID}"
+          try_import "google_bigquery_table.processed" "projects/${PROJECT_ID}/datasets/${DATASET_ID}/tables/${PROCESSED_TABLE_ID}"
+          try_import "google_bigquery_table.errors" "projects/${PROJECT_ID}/datasets/${DATASET_ID}/tables/${ERROR_TABLE_ID}"
+          try_import "google_service_account.cloud_run_sa" "projects/${PROJECT_ID}/serviceAccounts/${cloud_run_sa_email}"
+          try_import "google_service_account.pubsub_push_sa" "projects/${PROJECT_ID}/serviceAccounts/${pubsub_push_sa_email}"
+          try_import "google_pubsub_topic.events" "projects/${PROJECT_ID}/topics/${TOPIC_NAME}"
+          try_import "google_pubsub_topic.events_dlq" "projects/${PROJECT_ID}/topics/${TOPIC_NAME}_dlq"
+          try_import "google_pubsub_subscription.push" "projects/${PROJECT_ID}/subscriptions/${SUBSCRIPTION_NAME}"
+          try_import "google_pubsub_subscription.dlq_pull" "projects/${PROJECT_ID}/subscriptions/${TOPIC_NAME}_dlq_sub"
+          try_import "google_cloud_run_service.svc" "locations/${REGION}/namespaces/${PROJECT_ID}/services/${SERVICE_NAME}"
+
       - name: Terraform plan (review in logs)
         working-directory: terraform
         run: |
