@@ -37,6 +37,8 @@ If you already created resources before the backend was configured, import them 
 ./scripts/terraform-import.ps1 -ProjectId yash-playground-dev -Region us-central1
 ```
 
+Note: The `manual-apply` workflow also includes a small one-time "bootstrap import" that runs only when the remote state is empty, to prevent `409 Already Exists` errors.
+
 ## Local run (smoke test)
 
 1) Install deps:
